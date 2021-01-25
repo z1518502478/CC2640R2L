@@ -79,6 +79,9 @@
 
 #include "simple_peripheral.h"
 
+#include "snv.h"
+#include "ibeaconcfg.h"
+
 #ifdef PTM_MODE
 #include "npi_task.h"              // To allow RX event registration
 #include "npi_ble.h"               // To enable transmission of messages to UART
@@ -351,7 +354,6 @@ static uint8_t scanRspData[] =
 
 // Advertising handles
 static uint8 advHandleLegacy;
-static uint8 advHandleLongRange;
 
 // Address mode
 static GAP_Addr_Modes_t addrMode = DEFAULT_ADDRESS_MODE;
@@ -361,6 +363,9 @@ static GAP_Addr_Modes_t addrMode = DEFAULT_ADDRESS_MODE;
 static uint8 rpa[B_ADDR_LEN] = {0};
 #endif // PRIVACY_1_2_CFG
 
+ibeaconinf_config_t ibeaconInf_Config;
+
+static uint8_t rxbuff[256];
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -408,6 +413,8 @@ static status_t SimplePeripheral_setPhy(uint16_t connHandle, uint8_t allPhys,
 static uint8_t SimplePeripheral_clearConnListEntry(uint16_t connHandle);
 static void SimplePeripheral_connEvtCB(Gap_ConnEventRpt_t *pReport);
 static void SimplePeripheral_processConnEvt(Gap_ConnEventRpt_t *pReport);
+
+static void SimpleBLEPeripheral_BleParameterGet(void);
 #ifdef PTM_MODE
 void simple_peripheral_handleNPIRxInterceptEvent(uint8_t *pMsg);      // Declaration
 static void simple_peripheral_sendToNPI(uint8_t *buf, uint16_t len);  // Declaration
@@ -570,6 +577,9 @@ static void SimplePeripheral_init(void)
     GAP_SetParamValue(GAP_PARAM_LINK_UPDATE_DECISION, paramUpdateDecision);
   }
 
+  Nvram_Init();
+  SimpleBLEPeripheral_BleParameterGet();
+
   // Initialize GATT attributes
   GGS_AddService(GATT_ALL_SERVICES);           // GAP GATT Service
   GATTServApp_AddService(GATT_ALL_SERVICES);   // GATT Service
@@ -580,22 +590,24 @@ static void SimplePeripheral_init(void)
   // For more information, see the GATT and GATTServApp sections in the User's Guide:
   // http://software-dl.ti.com/lprf/ble5stack-latest/
   {
-    uint8_t charValue1 = 1;
-    uint8_t charValue2 = 2;
-    uint8_t charValue3 = 3;
-    uint8_t charValue4 = 4;
-    uint8_t charValue5[SIMPLEPROFILE_CHAR5_LEN] = { 1, 2, 3, 4, 5 };
+    uint8_t charValue1[] = {0x34,0x12};
 
-    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, sizeof(uint8_t),
-                               &charValue1);
-    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint8_t),
-                               &charValue2);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, sizeof(uint16_t),
+                               charValue1);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, DEFAULT_UUID_LEN,
+                               &ibeaconInf_Config.uuidValue[0]);
     SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, sizeof(uint8_t),
-                               &charValue3);
-    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, sizeof(uint8_t),
-                               &charValue4);
-    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN,
-                               charValue5);
+                               &ibeaconInf_Config.txPower);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, sizeof(uint16_t),
+                               &"ad");
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, sizeof(uint16_t),
+                               &ibeaconInf_Config.majorValue[0]);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, sizeof(uint16_t),
+                               &ibeaconInf_Config.minorValue[0]);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR7, sizeof(uint8_t),
+                               &ibeaconInf_Config.txInterval);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR60, sizeof(uint8_t),
+                               &ibeaconInf_Config.Rxp);
   }
 
   // Register callback with SimpleGATTprofile
@@ -979,7 +991,7 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
         memcpy(systemId, pPkt->devAddr, B_ADDR_LEN);
 
         // Set Device Info Service Parameter
-        DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN, systemId);
+        DevInfo_SetParameter(DEVINFO_BTADDRESS, DEVINFO_BTADDRESS_LEN, systemId);
 
         // Setup and start Advertising
         // For more information, see the GAP section in the User's Guide:
@@ -2198,6 +2210,35 @@ static void SimplePeripheral_updatePHYStat(uint16_t eventCode, uint8_t *pMsg)
     default:
       break;
   } // end of switch (eventCode)
+}
+
+/*********************************************************************
+ * @fn      SimpleBLEPeripheral_BleParameterGet
+ *
+ * @brief    Get Ble Parameter.
+ *
+ * @param   none
+ *
+ * @return  none
+ */
+static void SimpleBLEPeripheral_BleParameterGet(void)
+{
+    uint32_t crc;
+
+    snvinf_t *ptr = (snvinf_t *)rxbuff; //reuse
+
+    if( Ble_ReadNv_Inf( BLE_NVID_DEVINF_START, (uint8_t *)ptr) == 0 )
+    {
+        crc = crc32(0, &ptr->ibeaconinf_config.txPower, sizeof(ibeaconinf_config_t));
+        if( crc == ptr->crc32)
+          memcpy(&ibeaconInf_Config.txPower, &ptr->ibeaconinf_config.txPower, sizeof(ibeaconinf_config_t));
+        else
+          ibeaconInf_Config.initFlag = 0xFF;
+    }
+    else
+        ibeaconInf_Config.initFlag = 0xFF;
+
+    memset( (void *)rxbuff, 0, sizeof(rxbuff));
 }
 
 #ifdef PTM_MODE
