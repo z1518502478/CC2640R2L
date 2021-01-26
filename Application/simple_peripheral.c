@@ -102,6 +102,9 @@
 // it's last parameter set to a static random address
 #define DEFAULT_ADDRESS_MODE                  ADDRMODE_PUBLIC
 
+// Advertising interval when device is discoverable (units of 625us, 160=100ms)
+#define DEFAULT_ADVERTISING_INTERVAL          160
+
 // General discoverable mode: advertise indefinitely
 #define DEFAULT_DISCOVERABLE_MODE             GAP_ADTYPE_FLAGS_GENERAL
 
@@ -314,6 +317,8 @@ static List_List paramUpdateList;
 
 // GAP GATT Attributes
 static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "Simple Peripheral";
+
+static uint16_t advInt = 160;    //100ms
 
 // Advertisement data
 static uint8_t advertData[] =
@@ -579,6 +584,67 @@ static void SimplePeripheral_init(void)
 
   Nvram_Init();
   SimpleBLEPeripheral_BleParameterGet();
+
+  if(ibeaconInf_Config.initFlag != 0xFF)
+  {
+      memcpy(&scanRspData[19], &ibeaconInf_Config.majorValue[0], sizeof(uint32_t));
+      memcpy(&scanRspData[17], &ibeaconInf_Config.uuidValue[14], sizeof(uint16_t));
+      memcpy(&advertData[9], &ibeaconInf_Config.uuidValue, DEFAULT_UUID_LEN);
+      memcpy(&advertData[9 + DEFAULT_UUID_LEN], &ibeaconInf_Config.majorValue, sizeof(uint32_t));
+  }
+
+  uint8_t txpower = HCI_EXT_TX_POWER_0_DBM;
+
+  if(ibeaconInf_Config.initFlag != 0xFF)
+  {
+    switch(ibeaconInf_Config.txInterval)
+    {
+      case 1: advInt = 1400;                            //875ms
+          break;
+      case 2: advInt = DEFAULT_ADVERTISING_INTERVAL*5;  //500ms
+          break;
+      case 3: advInt = DEFAULT_ADVERTISING_INTERVAL*3;  //300ms
+          break;
+      case 4: advInt = 400;                             //250ms
+          break;
+      case 5: advInt = DEFAULT_ADVERTISING_INTERVAL*2;  //200ms
+          break;
+      case 10: advInt = DEFAULT_ADVERTISING_INTERVAL;   //100
+          break;
+      case 20: advInt = DEFAULT_ADVERTISING_INTERVAL/2; //50ms
+          break;
+      case 30: advInt = 48;                             //30ms test
+          break;
+      case 50: advInt = 32;                             //20ms test
+          break;
+      default: advInt = DEFAULT_ADVERTISING_INTERVAL * 3;
+          break;
+    }
+
+    switch(ibeaconInf_Config.txPower)
+    {
+      case 0: txpower = HCI_EXT_TX_POWER_MINUS_21_DBM;  //-21dbm
+          break;
+      case 1: txpower = HCI_EXT_TX_POWER_MINUS_18_DBM;  //-18dbm
+          break;
+      case 2: txpower = HCI_EXT_TX_POWER_MINUS_12_DBM;  //-12dbm
+          break;
+      case 3: txpower = HCI_EXT_TX_POWER_MINUS_9_DBM;   //-9dbm
+          break;
+      case 4: txpower = HCI_EXT_TX_POWER_MINUS_6_DBM;   //-6dbm
+          break;
+      case 5: txpower = HCI_EXT_TX_POWER_MINUS_3_DBM;   //-3dbm
+          break;
+      case 6: txpower = HCI_EXT_TX_POWER_0_DBM;         //0dbm
+          break;
+      case 7: txpower = HCI_EXT_TX_POWER_2_DBM;         //2dbm
+          break;
+      default: txpower = HCI_EXT_TX_POWER_0_DBM;
+          break;
+    }
+  }
+
+  HCI_EXT_SetTxPowerCmd(txpower);
 
   // Initialize GATT attributes
   GGS_AddService(GATT_ALL_SERVICES);           // GAP GATT Service
@@ -999,7 +1065,18 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
 
         // Temporary memory for advertising parameters for set #1. These will be copied
         // by the GapAdv module
-        GapAdv_params_t advParamLegacy = GAPADV_PARAMS_LEGACY_SCANN_CONN;
+        GapAdv_params_t advParamLegacy;
+
+        advParamLegacy.eventProps = GAP_ADV_PROP_CONNECTABLE | GAP_ADV_PROP_SCANNABLE | GAP_ADV_PROP_LEGACY;
+        advParamLegacy.primIntMin = advInt;
+        advParamLegacy.primIntMax = advInt;
+        advParamLegacy.primChanMap = GAP_ADV_CHAN_ALL;
+        advParamLegacy.peerAddrType = PEER_ADDRTYPE_PUBLIC_OR_PUBLIC_ID;
+        //memcpy(advParamLegacy.peerAddr, pPkt->devAddr, B_ADDR_LEN);
+        advParamLegacy.filterPolicy = GAP_ADV_WL_POLICY_ANY_REQ;
+        advParamLegacy.primPhy = GAP_ADV_PRIM_PHY_1_MBPS;
+        advParamLegacy.secPhy  = GAP_ADV_SEC_PHY_1_MBPS;
+        advParamLegacy.sid     = 0;
 
         // Create Advertisement set #1 and assign handle
         status = GapAdv_create(&SimplePeripheral_advCallback, &advParamLegacy,
