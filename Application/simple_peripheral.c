@@ -54,6 +54,7 @@
 #include <ti/sysbios/knl/Clock.h>
 #include <ti/sysbios/knl/Event.h>
 #include <ti/sysbios/knl/Queue.h>
+#include <ti/sysbios/knl/Semaphore.h>
 
 #if !(defined __TI_COMPILER_VERSION__)
 #include <intrinsics.h>
@@ -81,6 +82,7 @@
 
 #include "snv.h"
 #include "ibeaconcfg.h"
+#include "hal_uart.h"
 
 #ifdef PTM_MODE
 #include "npi_task.h"              // To allow RX event registration
@@ -150,6 +152,7 @@
 #define SP_READ_RPA_EVT                      7
 #define SP_SEND_PARAM_UPDATE_EVT             8
 #define SP_CONN_EVT                          9
+#define SP_UART_RCV_EVT                      10
 
 // Internal Events for RTOS application
 #define SP_ICALL_EVT                         ICALL_MSG_EVENT_ID // Event_Id_31
@@ -161,17 +164,6 @@
 
 // Size of string-converted device address ("0xXXXXXXXXXXXX")
 #define SP_ADDR_STR_SIZE     15
-
-// Row numbers for two-button menu
-#define SP_ROW_SEPARATOR_1   (TBM_ROW_APP + 0)
-#define SP_ROW_STATUS_1      (TBM_ROW_APP + 1)
-#define SP_ROW_STATUS_2      (TBM_ROW_APP + 2)
-#define SP_ROW_CONNECTION    (TBM_ROW_APP + 3)
-#define SP_ROW_ADVSTATE      (TBM_ROW_APP + 4)
-#define SP_ROW_RSSI          (TBM_ROW_APP + 5)
-#define SP_ROW_IDA           (TBM_ROW_APP + 6)
-#define SP_ROW_RPA           (TBM_ROW_APP + 7)
-#define SP_ROW_DEBUG         (TBM_ROW_APP + 8)
 
 // For storing the active connections
 #define SP_RSSI_TRACK_CHNLS        1            // Max possible channels can be GAP_BONDINGS_MAX
@@ -186,6 +178,10 @@
 
 // Spin if the expression is not true
 #define SIMPLEPERIPHERAL_ASSERT(expr) if (!(expr)) simple_peripheral_spin();
+
+#define DEFAULT_UART_AT_TEST_LEN              4
+#define DEFAULT_UART_AT_CMD_LEN               49
+#define DEFAULT_UART_AT_RSP_LEN               6
 
 /*********************************************************************
  * TYPEDEFS
@@ -370,7 +366,12 @@ static uint8 rpa[B_ADDR_LEN] = {0};
 
 ibeaconinf_config_t ibeaconInf_Config;
 
-static uint8_t rxbuff[256];
+static uint8_t rxbuff[64];
+
+const uint8_t D_FRT[10] ={'2','0','2','1','-','0','1','-','2','2'};                 //固件发布日期 必须与设备信息一致
+const uint8_t D_FR[14]={'F','M','V','E','R','S','I','O','N','_','0','0','0','1'};   //固件版本      必须与设备信息一致
+const uint8_t D_CKey[16]={0xDE,0x48,0x2B,0x1C,0x22,0x1C,0x6C,0x30,0x3C,0xF0,0x50,0xEB,0x00,0x20,0xB0,0xBD}; //与生产软件配合使用
+uint8_t hw[15] ={'H','W','V','E','R','S','I','O','N','_','0','0','0','1','\0'};
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -384,22 +385,15 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg);
 static void SimplePeripheral_advCallback(uint32_t event, void *pBuf, uintptr_t arg);
 static void SimplePeripheral_processAdvEvent(spGapAdvEventData_t *pEventData);
 static void SimplePeripheral_processAppMsg(spEvt_t *pMsg);
-static void SimplePeripheral_processCharValueChangeEvt(uint8_t paramId);
+//static void SimplePeripheral_processCharValueChangeEvt(uint8_t paramId);
 static void SimplePeripheral_performPeriodicTask(void);
 #if defined(BLE_V42_FEATURES) && (BLE_V42_FEATURES & PRIVACY_1_2_CFG)
 static void SimplePeripheral_updateRPA(void);
 #endif // PRIVACY_1_2_CFG
 static void SimplePeripheral_clockHandler(UArg arg);
-#if defined(GAP_BOND_MGR)
-static void SimplePeripheral_passcodeCb(uint8_t *pDeviceAddr, uint16_t connHandle,
-                                        uint8_t uiInputs, uint8_t uiOutputs,
-                                        uint32_t numComparison);
-static void SimplePeripheral_pairStateCb(uint16_t connHandle, uint8_t state,
-                                         uint8_t status);
-#endif
+
 static void SimplePeripheral_processPairState(spPairStateData_t *pPairState);
-static void SimplePeripheral_processPasscode(spPasscodeData_t *pPasscodeData);
-static void SimplePeripheral_charValueChangeCB(uint8_t paramId);
+//static void SimplePeripheral_processPasscode(spPasscodeData_t *pPasscodeData);
 static status_t SimplePeripheral_enqueueMsg(uint8_t event, void *pData);
 //static void SimplePeripheral_keyChangeHandler(uint8 keys);
 static void SimplePeripheral_handleKeys(uint8_t keys);
@@ -420,10 +414,11 @@ static void SimplePeripheral_connEvtCB(Gap_ConnEventRpt_t *pReport);
 static void SimplePeripheral_processConnEvt(Gap_ConnEventRpt_t *pReport);
 
 static void SimpleBLEPeripheral_BleParameterGet(void);
-#ifdef PTM_MODE
-void simple_peripheral_handleNPIRxInterceptEvent(uint8_t *pMsg);      // Declaration
-static void simple_peripheral_sendToNPI(uint8_t *buf, uint16_t len);  // Declaration
-#endif // PTM_MODE
+
+#ifndef DEMO
+void uart0BoardReciveCallback(UART_Handle handle, void *buf, size_t count);
+static void SimpleBLEPeripheral_uart0Task(uint8_t *data);
+#endif
 
 /*********************************************************************
  * EXTERN FUNCTIONS
@@ -433,21 +428,6 @@ extern void AssertHandler(uint8 assertCause, uint8 assertSubcause);
 /*********************************************************************
  * PROFILE CALLBACKS
  */
-
-#if defined(GAP_BOND_MGR)
-// GAP Bond Manager Callbacks
-static gapBondCBs_t SimplePeripheral_BondMgrCBs =
-{
-  SimplePeripheral_passcodeCb,       // Passcode callback
-  SimplePeripheral_pairStateCb       // Pairing/Bonding state Callback
-};
-#endif
-
-// Simple GATT Profile Callbacks
-static simpleProfileCBs_t SimplePeripheral_simpleProfileCBs =
-{
-  SimplePeripheral_charValueChangeCB // Simple GATT Characteristic value change callback
-};
 
 /*********************************************************************
  * PUBLIC FUNCTIONS
@@ -469,59 +449,6 @@ static void simple_peripheral_spin(void)
     x++;
   }
 }
-
-#ifdef PTM_MODE
-/*********************************************************************
-* @fn      simple_peripheral_handleNPIRxInterceptEvent
-*
-* @brief   Intercept an NPI RX serial message and queue for this application.
-*
-* @param   pMsg - a NPIMSG_msg_t containing the intercepted message.
-*
-* @return  none.
-*/
-void simple_peripheral_handleNPIRxInterceptEvent(uint8_t *pMsg)
-{
- // Send Command via HCI TL
- HCI_TL_SendToStack(((NPIMSG_msg_t *)pMsg)->pBuf);
-
- // The data is stored as a message, free this first.
- ICall_freeMsg(((NPIMSG_msg_t *)pMsg)->pBuf);
-
- // Free container.
- ICall_free(pMsg);
-}
-
-/*********************************************************************
-* @fn      simple_peripheral_sendToNPI
-*
-* @brief   Create an NPI packet and send to NPI to transmit.
-*
-* @param   buf - pointer HCI event or data.
-*
-* @param   len - length of buf in bytes.
-*
-* @return  none
-*/
-static void simple_peripheral_sendToNPI(uint8_t *buf, uint16_t len)
-{
- npiPkt_t *pNpiPkt = (npiPkt_t *)ICall_allocMsg(sizeof(npiPkt_t) + len);
-
- if (pNpiPkt)
- {
-   pNpiPkt->hdr.event = buf[0]; //Has the event status code in first byte of payload
-   pNpiPkt->hdr.status = 0xFF;
-   pNpiPkt->pktLen = len;
-   pNpiPkt->pData  = (uint8 *)(pNpiPkt + 1);
-
-   memcpy(pNpiPkt->pData, buf, len);
-
-   // Send to NPI
-   // Note: there is no need to free this packet.  NPI will do that itself.
-   NPITask_sendToHost((uint8_t *)pNpiPkt);
- }
-}
-#endif // PTM_MODE
 
 /*********************************************************************
  * @fn      SimplePeripheral_createTask
@@ -584,6 +511,16 @@ static void SimplePeripheral_init(void)
 
   Nvram_Init();
   SimpleBLEPeripheral_BleParameterGet();
+
+#ifndef DEMO
+  if(ibeaconInf_Config.atFlag != (0xFF - 1))
+  {
+    if(Open_uart0(uart0BoardReciveCallback) != TRUE)
+        while(1);
+    else
+        Uart0_Write("OK", 2);
+  }
+#endif
 
   if(ibeaconInf_Config.initFlag != 0xFF)
   {
@@ -675,14 +612,6 @@ static void SimplePeripheral_init(void)
     SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR60, sizeof(uint8_t),
                                &ibeaconInf_Config.Rxp);
   }
-
-  // Register callback with SimpleGATTprofile
-  SimpleProfile_RegisterAppCBs(&SimplePeripheral_simpleProfileCBs);
-
-#if defined(GAP_BOND_MGR)
-  // Start Bond Manager and register callback
-  VOID GAPBondMgr_Register(&SimplePeripheral_BondMgrCBs);
-#endif
 
   // Register with GAP for HCI/Host messages. This is needed to receive HCI
   // events. For more information, see the HCI section in the User's Guide:
@@ -889,45 +818,6 @@ static uint8_t SimplePeripheral_processStackMsg(ICall_Hdr *pMsg)
       break;
   }
 
-#ifdef PTM_MODE
-  // Check for NPI Messages
-  hciPacket_t *pBuf = (hciPacket_t *)pMsg;
-
-  // Serialized HCI Event
-  if (pBuf->hdr.event == HCI_CTRL_TO_HOST_EVENT)
-  {
-    uint16_t len = 0;
-
-    // Determine the packet length
-    switch(pBuf->pData[0])
-    {
-      case HCI_EVENT_PACKET:
-        len = HCI_EVENT_MIN_LENGTH + pBuf->pData[2];
-        break;
-
-      case HCI_ACL_DATA_PACKET:
-        len = HCI_DATA_MIN_LENGTH + BUILD_UINT16(pBuf->pData[3], pBuf->pData[4]);
-        break;
-
-      default:
-        break;
-    }
-
-    // Send to Remote Host.
-    simple_peripheral_sendToNPI(pBuf->pData, len);
-
-    // Free buffers if needed.
-    switch (pBuf->pData[0])
-    {
-      case HCI_ACL_DATA_PACKET:
-      case HCI_SCO_DATA_PACKET:
-        BM_free(pBuf->pData);
-      default:
-        break;
-    }
-  }
-#endif // PTM_MODE
-
   return (safeToDealloc);
 }
 
@@ -974,10 +864,6 @@ static void SimplePeripheral_processAppMsg(spEvt_t *pMsg)
 
   switch (pMsg->event)
   {
-    case SP_CHAR_CHANGE_EVT:
-      SimplePeripheral_processCharValueChangeEvt(*(uint8_t*)(pMsg->pData));
-      break;
-
     case SP_KEY_CHANGE_EVT:
       SimplePeripheral_handleKeys(*(uint8_t*)(pMsg->pData));
       break;
@@ -990,9 +876,9 @@ static void SimplePeripheral_processAppMsg(spEvt_t *pMsg)
       SimplePeripheral_processPairState((spPairStateData_t*)(pMsg->pData));
       break;
 
-    case SP_PASSCODE_EVT:
-      SimplePeripheral_processPasscode((spPasscodeData_t*)(pMsg->pData));
-      break;
+//    case SP_PASSCODE_EVT:
+//      SimplePeripheral_processPasscode((spPasscodeData_t*)(pMsg->pData));
+//      break;
 
     case SP_PERIODIC_EVT:
       SimplePeripheral_performPeriodicTask();
@@ -1019,6 +905,12 @@ static void SimplePeripheral_processAppMsg(spEvt_t *pMsg)
     case SP_CONN_EVT:
       SimplePeripheral_processConnEvt((Gap_ConnEventRpt_t *)(pMsg->pData));
       break;
+
+#ifndef DEMO
+    case SP_UART_RCV_EVT:
+     SimpleBLEPeripheral_uart0Task(pMsg->pData);
+    break;
+#endif
 
     default:
       // Do nothing.
@@ -1103,12 +995,6 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
         status = GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX , 0);
         SIMPLEPERIPHERAL_ASSERT(status == SUCCESS);
 
-#ifdef PTM_MODE
-         // Enable "Enable PTM Mode" option
-         tbm_setItemStatus(&spMenuMain, SP_ITEM_PTM_ENBL, SP_ITEM_NONE);
-#endif
-
-
 #if defined(BLE_V42_FEATURES) && (BLE_V42_FEATURES & PRIVACY_1_2_CFG)
         if (addrMode > ADDRMODE_RANDOM)
         {
@@ -1129,9 +1015,6 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
     {
       gapEstLinkReqEvent_t *pPkt = (gapEstLinkReqEvent_t *)pMsg;
 
-      // Display the amount of current connections
-      uint8_t numActive = linkDB_NumActive();
-
       if (pPkt->hdr.status == SUCCESS)
       {
         // Add connection to list and start RSSI
@@ -1140,17 +1023,6 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
         // Start Periodic Clock.
         Util_startClock(&clkPeriodic);
       }
-
-//      if (numActive < MAX_NUM_BLE_CONNS)
-//      {
-//        // Start advertising since there is room for more connections
-//        GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX , 0);
-//      }
-//      else
-//      {
-//        // Stop advertising since there is no room for more connections
-//        GapAdv_disable(advHandleLegacy);
-//      }
 
       break;
     }
@@ -1244,48 +1116,20 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
  *
  * @return  None.
  */
-static void SimplePeripheral_charValueChangeCB(uint8_t paramId)
-{
-  uint8_t *pValue = ICall_malloc(sizeof(uint8_t));
-
-  if (pValue)
-  {
-    *pValue = paramId;
-
-    if (SimplePeripheral_enqueueMsg(SP_CHAR_CHANGE_EVT, pValue) != SUCCESS)
-    {
-      ICall_free(pValue);
-    }
-  }
-}
-
-/*********************************************************************
- * @fn      SimplePeripheral_processCharValueChangeEvt
- *
- * @brief   Process a pending Simple Profile characteristic value change
- *          event.
- *
- * @param   paramID - parameter ID of the value that was changed.
- */
-static void SimplePeripheral_processCharValueChangeEvt(uint8_t paramId)
-{
-  uint8_t newValue;
-
-  switch(paramId)
-  {
-    case SIMPLEPROFILE_CHAR1:
-      SimpleProfile_GetParameter(SIMPLEPROFILE_CHAR1, &newValue);
-      break;
-
-    case SIMPLEPROFILE_CHAR3:
-      SimpleProfile_GetParameter(SIMPLEPROFILE_CHAR3, &newValue);
-      break;
-
-    default:
-      // should not reach here!
-      break;
-  }
-}
+//static void SimplePeripheral_charValueChangeCB(uint8_t paramId)
+//{
+//  uint8_t *pValue = ICall_malloc(sizeof(uint8_t));
+//
+//  if (pValue)
+//  {
+//    *pValue = paramId;
+//
+//    if (SimplePeripheral_enqueueMsg(SP_CHAR_CHANGE_EVT, pValue) != SUCCESS)
+//    {
+//      ICall_free(pValue);
+//    }
+//  }
+//}
 
 /*********************************************************************
  * @fn      SimplePeripheral_performPeriodicTask
@@ -1546,67 +1390,6 @@ static void SimplePeripheral_processAdvEvent(spGapAdvEventData_t *pEventData)
   }
 }
 
-#if defined(GAP_BOND_MGR)
-/*********************************************************************
- * @fn      SimplePeripheral_pairStateCb
- *
- * @brief   Pairing state callback.
- *
- * @return  none
- */
-static void SimplePeripheral_pairStateCb(uint16_t connHandle, uint8_t state,
-                                         uint8_t status)
-{
-  spPairStateData_t *pData = ICall_malloc(sizeof(spPairStateData_t));
-
-  // Allocate space for the event data.
-  if (pData)
-  {
-    pData->state = state;
-    pData->connHandle = connHandle;
-    pData->status = status;
-
-    // Queue the event.
-    if(SimplePeripheral_enqueueMsg(SP_PAIR_STATE_EVT, pData) != SUCCESS)
-    {
-      ICall_free(pData);
-    }
-  }
-}
-
-/*********************************************************************
- * @fn      SimplePeripheral_passcodeCb
- *
- * @brief   Passcode callback.
- *
- * @return  none
- */
-static void SimplePeripheral_passcodeCb(uint8_t *pDeviceAddr,
-                                        uint16_t connHandle,
-                                        uint8_t uiInputs,
-                                        uint8_t uiOutputs,
-                                        uint32_t numComparison)
-{
-  spPasscodeData_t *pData = ICall_malloc(sizeof(spPasscodeData_t));
-
-  // Allocate space for the passcode event.
-  if (pData )
-  {
-    pData->connHandle = connHandle;
-    memcpy(pData->deviceAddr, pDeviceAddr, B_ADDR_LEN);
-    pData->uiInputs = uiInputs;
-    pData->uiOutputs = uiOutputs;
-    pData->numComparison = numComparison;
-
-    // Enqueue the event.
-    if(SimplePeripheral_enqueueMsg(SP_PASSCODE_EVT, pData) != SUCCESS)
-    {
-      ICall_free(pData);
-    }
-  }
-}
-#endif
-
 /*********************************************************************
  * @fn      SimplePeripheral_processPairState
  *
@@ -1635,22 +1418,6 @@ static void SimplePeripheral_processPairState(spPairStateData_t *pPairData)
     default:
       break;
   }
-}
-
-/*********************************************************************
- * @fn      SimplePeripheral_processPasscode
- *
- * @brief   Process the Passcode request.
- *
- * @return  none
- */
-static void SimplePeripheral_processPasscode(spPasscodeData_t *pPasscodeData)
-{
-#if defined(GAP_BOND_MGR)
-  // Send passcode response
-  GAPBondMgr_PasscodeRsp(pPasscodeData->connHandle , SUCCESS,
-                         B_APP_DEFAULT_PASSCODE);
-#endif
 }
 
 /*********************************************************************
@@ -2289,6 +2056,164 @@ static void SimplePeripheral_updatePHYStat(uint16_t eventCode, uint8_t *pMsg)
   } // end of switch (eventCode)
 }
 
+#ifndef DEMO
+extern uint8_t uart0RxBuff[];
+extern UART_Handle  uartHandle;
+/*********************************************************************
+ * @fn      str_Compara
+ *
+ * @brief   Compare the array.
+ *
+ * @param   ..
+ *
+ * @return  0 Or 1
+ */
+uint8_t str_Compara( uint8_t *ptr1, uint8_t *ptr2, uint8_t len)
+{
+    uint8_t i;
+
+    for( i=0; i<len; i++ )
+    {
+        if( ptr1[i] != ptr2[i] )
+            return 0;
+    }
+
+    return 1;
+}
+
+/*********************************************************************
+ * @fn      SimpleBLEPeripheral_uart0Task
+ *
+ * @brief   Uart0 data analysis.
+ *
+ * @param   ...
+ *
+ * @return  none
+ */
+static void SimpleBLEPeripheral_uart0Task(uint8_t *data)
+{
+    uint8_t length;
+    uint8_t restart;
+    uint8_t datebuf[DEFAULT_UART_AT_CMD_LEN];
+    uint8_t mac[6];
+    uint8_t date[10];
+
+    length =  *data;
+
+    if( DEFAULT_UART_AT_TEST_LEN == length )
+    {
+        memcpy(datebuf, rxbuff, DEFAULT_UART_AT_TEST_LEN);
+
+        if( str_Compara( datebuf, "AT\r\n", 4 ) )
+        {
+            Uart0_Write("OK\r\n", 4);
+        }
+    }
+    else if( DEFAULT_UART_AT_CMD_LEN == length )
+    {
+        memcpy(datebuf, rxbuff, DEFAULT_UART_AT_CMD_LEN);
+        if( str_Compara( datebuf, "AT+1=", 5) )
+        {
+            //uuid
+            memcpy( &ibeaconInf_Config.uuidValue[0], &datebuf[5], DEFAULT_UUID_LEN );
+            //major & minor
+            memcpy( &ibeaconInf_Config.majorValue[0], &datebuf[21], sizeof(uint32_t) );
+            //hwvr
+            memcpy( &ibeaconInf_Config.hwvr[0], &datebuf[35], sizeof(uint32_t) );
+            //txPower
+            memcpy( &ibeaconInf_Config.txPower, &datebuf[39], sizeof(uint8_t) );
+            switch( ibeaconInf_Config.txPower )
+            {
+                case 1: ibeaconInf_Config.Rxp = 0xAB; break;
+                case 3: ibeaconInf_Config.Rxp = 0xB5; break;
+                case 5: ibeaconInf_Config.Rxp = 0xBD; break;
+                case 7: ibeaconInf_Config.Rxp = 0xC0; break;
+                default : ibeaconInf_Config.Rxp = 0xB5;
+            }
+            //txInterval
+            memcpy( &ibeaconInf_Config.txInterval, &datebuf[40], sizeof(uint8_t) );
+            //mdate
+            memcpy(&ibeaconInf_Config.mDate[0], &datebuf[25], 10);
+
+            /***** 用于通过生产软件 ***********/
+            memcpy(date, &datebuf[25], sizeof(date));
+            memcpy(mac, &datebuf[41], sizeof(mac));
+            memset(datebuf, 0, sizeof(datebuf));
+            memcpy(datebuf, mac, 6);
+            datebuf[6] = ibeaconInf_Config.txPower;
+            datebuf[7] = ibeaconInf_Config.txInterval;
+            memcpy(&datebuf[8], &ibeaconInf_Config.majorValue[0], 4);
+            memcpy(&datebuf[12], &ibeaconInf_Config.uuidValue[0], 16);
+            memcpy(&datebuf[28], date, 10);
+            datebuf[38] = ibeaconInf_Config.Rxp;
+            memcpy(&datebuf[39], &ibeaconInf_Config.hwvr[0], 4);
+
+            ibeaconInf_Config.atFlag = 0xFF - 1;
+
+            Uart0_Write("OK+1\r\n", 6);
+
+            Ble_WriteNv_Inf( BLE_NVID_CUST_START + 1, datebuf);
+        }
+    }
+    else if( DEFAULT_UART_AT_RSP_LEN == length )
+    {
+        memcpy(datebuf, rxbuff, DEFAULT_UART_AT_RSP_LEN);
+        if( str_Compara( datebuf, "AT+?\r\n", 6) )
+        {
+            memset(datebuf, 0, sizeof(datebuf));
+            Ble_ReadNv_Inf(BLE_NVID_CUST_START + 1, datebuf);
+
+            Uart0_Write( "OK+", 3 );
+            Uart0_Write( &datebuf[4], 43);
+            Uart0_Write( D_FRT, 10);
+            Uart0_Write( &D_FR[10], 4);
+            Uart0_Write( D_CKey, 16);
+
+            ibeaconInf_Config.atFlag = 0xFF -1;
+
+            Ble_WriteNv_Inf( BLE_NVID_CUST_START, &ibeaconInf_Config.txPower);
+
+            restart = TRUE;
+        }
+    }
+    else
+    {
+      return;
+    }
+
+    if( TRUE == restart )
+    {
+        HCI_EXT_ResetSystemCmd(HCI_EXT_RESET_SYSTEM_HARD);
+    }
+}
+
+/*********************************************************************
+ * @fn      uart0BoardReciveCallback
+ *
+ * @brief   Uart0 .
+ *
+ * @param   ...
+ *
+ * @return  none
+ */
+void uart0BoardReciveCallback(UART_Handle handle, void *buf, size_t count)
+{
+    uint8_t *pdata = ICall_malloc(sizeof(uint8_t));
+
+    pdata = (uint8_t *)&count;
+
+    memcpy(rxbuff, buf, count);
+
+    // Enqueue the event for processing in the app context.
+    if(SimplePeripheral_enqueueMsg(SP_UART_RCV_EVT, pdata) != SUCCESS)
+    {
+      ICall_free(pdata);
+    }
+
+    UART_read(uartHandle, uart0RxBuff, UART0_RECEICE_BUFF_SIZE);
+}
+#endif
+
 /*********************************************************************
  * @fn      SimpleBLEPeripheral_BleParameterGet
  *
@@ -2318,51 +2243,5 @@ static void SimpleBLEPeripheral_BleParameterGet(void)
     memset( (void *)rxbuff, 0, sizeof(rxbuff));
 }
 
-#ifdef PTM_MODE
-/*********************************************************************
-* @fn      SimplePeripheral_doEnablePTMMode
-*
-* @brief   Stop advertising, configure & start PTM mode
-*
-* @param   index - item index from the menu
-*
-* @return  always true
-*/
-bool SimplePeripheral_doEnablePTMMode(uint8_t index)
-{
-  // Clear Display
-  Display_clearLines(dispHandle, 0, 15);
-
-  // Indicate in screen that PTM Mode is initializing
-  Display_printf(dispHandle, 1, 0, "PTM Mode initializing!\n\n\rPlease note UART feed will now stop...");  
-  
-  // Before starting the NPI task close Display driver to make sure there is no shared resource used by both
-  Display_close(dispHandle);
-  
-  // Start NPI task
-  NPITask_createTask(ICALL_SERVICE_CLASS_BLE);
-
-  // Disable Advertising and destroy sets
-  GapAdv_destroy(advHandleLegacy,GAP_ADV_FREE_OPTION_ALL_DATA);
-  GapAdv_destroy(advHandleLongRange,GAP_ADV_FREE_OPTION_ALL_DATA);
-
-  // Intercept NPI RX events.
-  NPITask_registerIncomingRXEventAppCB(simple_peripheral_handleNPIRxInterceptEvent, INTERCEPT);
-
-  // Register for Command Status information
-  HCI_TL_Init(NULL, (HCI_TL_CommandStatusCB_t) simple_peripheral_sendToNPI, NULL, selfEntity);
-
-  // Register for Events
-  HCI_TL_getCmdResponderID(ICall_getLocalMsgEntityId(ICALL_SERVICE_CLASS_BLE_MSG, selfEntity));
-
-  // Inform Stack to Initialize PTM
-  HCI_EXT_EnablePTMCmd();
-
-  // Open back the display to avoid crashes to future calls to Display_printf (even though they won't go through until reboot)
-  dispHandle = Display_open(Display_Type_ANY, NULL);
-  
-  return TRUE;
-}
-#endif
 /*********************************************************************
 *********************************************************************/
