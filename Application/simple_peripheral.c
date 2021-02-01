@@ -368,6 +368,9 @@ ibeaconinf_config_t ibeaconInf_Config;
 
 static uint8_t rxbuff[64];
 
+extern uint8 configLimit_Flg;
+extern uint8 writerAttr_Flg;
+
 const uint8_t D_FRT[10] ={'2','0','2','1','-','0','1','-','2','2'};                 //固件发布日期 必须与设备信息一致
 const uint8_t D_FR[14]={'F','M','V','E','R','S','I','O','N','_','0','0','0','1'};   //固件版本      必须与设备信息一致
 const uint8_t D_CKey[16]={0xDE,0x48,0x2B,0x1C,0x22,0x1C,0x6C,0x30,0x3C,0xF0,0x50,0xEB,0x00,0x20,0xB0,0xBD}; //与生产软件配合使用
@@ -1042,6 +1045,13 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
       {
         // Stop periodic clock
         Util_stopClock(&clkPeriodic);
+      }
+
+      configLimit_Flg = FALSE;
+      if(writerAttr_Flg == TRUE)
+      {
+          Ble_WriteNv_Inf( BLE_NVID_CUST_START, &ibeaconInf_Config.txPower);
+          HCI_EXT_ResetSystemCmd(HCI_EXT_RESET_SYSTEM_HARD);
       }
 
       // Start advertising since there is room for more connections
