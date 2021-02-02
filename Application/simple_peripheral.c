@@ -126,7 +126,7 @@
 #define DEFAULT_PARAM_UPDATE_REQ_DECISION     GAP_UPDATE_REQ_PASS_TO_APP
 
 // How often to perform periodic event (in ms)
-#define SP_PERIODIC_EVT_PERIOD               5000
+#define SP_PERIODIC_EVT_PERIOD               60000
 
 // How often to read current current RPA (in ms)
 #define SP_READ_RPA_EVT_PERIOD               3000
@@ -371,6 +371,8 @@ static uint8_t rxbuff[64];
 extern uint8 configLimit_Flg;
 extern uint8 writerAttr_Flg;
 
+static uint16_t gapRole_ConnectionHandle;
+
 const uint8_t D_FRT[10] ={'2','0','2','1','-','0','1','-','2','2'};                 //固件发布日期 必须与设备信息一致
 const uint8_t D_FR[14]={'F','M','V','E','R','S','I','O','N','_','0','0','0','1'};   //固件版本      必须与设备信息一致
 const uint8_t D_CKey[16]={0xDE,0x48,0x2B,0x1C,0x22,0x1C,0x6C,0x30,0x3C,0xF0,0x50,0xEB,0x00,0x20,0xB0,0xBD}; //与生产软件配合使用
@@ -430,10 +432,6 @@ extern void AssertHandler(uint8 assertCause, uint8 assertSubcause);
 
 /*********************************************************************
  * PROFILE CALLBACKS
- */
-
-/*********************************************************************
- * PUBLIC FUNCTIONS
  */
 
 /*********************************************************************
@@ -1023,6 +1021,8 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
         // Add connection to list and start RSSI
         SimplePeripheral_addConn(pPkt->connectionHandle);
 
+        gapRole_ConnectionHandle = pPkt->connectionHandle;
+
         // Start Periodic Clock.
         Util_startClock(&clkPeriodic);
       }
@@ -1043,8 +1043,11 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
       // If no active connections
       if (numActive == 0)
       {
-        // Stop periodic clock
-        Util_stopClock(&clkPeriodic);
+          if(Util_isActive(&clkPeriodic))
+          {
+              // Stop periodic clock
+              Util_stopClock(&clkPeriodic);
+          }
       }
 
       configLimit_Flg = FALSE;
@@ -1156,18 +1159,7 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
  */
 static void SimplePeripheral_performPeriodicTask(void)
 {
-  uint8_t valueToCopy;
-
-  // Call to retrieve the value of the third characteristic in the profile
-  if (SimpleProfile_GetParameter(SIMPLEPROFILE_CHAR3, &valueToCopy) == SUCCESS)
-  {
-    // Call to set that value of the fourth characteristic in the profile.
-    // Note that if notifications of the fourth characteristic have been
-    // enabled by a GATT client device, then a notification will be sent
-    // every time this function is called.
-    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, sizeof(uint8_t),
-                               &valueToCopy);
-  }
+  GAP_TerminateLinkReq(gapRole_ConnectionHandle, HCI_DISCONNECT_REMOTE_USER_TERM);
 }
 
 #if defined(BLE_V42_FEATURES) && (BLE_V42_FEATURES & PRIVACY_1_2_CFG)
@@ -1211,11 +1203,7 @@ static void SimplePeripheral_clockHandler(UArg arg)
 
  if (pData->event == SP_PERIODIC_EVT)
  {
-   // Start the next period
-   Util_startClock(&clkPeriodic);
-
-   // Post event to wake up the application
-   SimplePeripheral_enqueueMsg(SP_PERIODIC_EVT, NULL);
+     SimplePeripheral_enqueueMsg(SP_PERIODIC_EVT, NULL);
  }
  else if (pData->event == SP_READ_RPA_EVT)
  {
