@@ -83,6 +83,7 @@
 #include "snv.h"
 #include "ibeaconcfg.h"
 #include "hal_uart.h"
+#include "auxadc.h"
 
 #ifdef PTM_MODE
 #include "npi_task.h"              // To allow RX event registration
@@ -131,6 +132,9 @@
 // How often to read current current RPA (in ms)
 #define SP_READ_RPA_EVT_PERIOD               3000
 
+// How often to restart system (in ms)
+#define SP_SYS_RESTART_EVT_PERIOD            1800000
+
 // Delay (in ms) after connection establishment before sending a parameter update requst
 #define SP_SEND_PARAM_UPDATE_DELAY           6000
 
@@ -153,6 +157,7 @@
 #define SP_SEND_PARAM_UPDATE_EVT             8
 #define SP_CONN_EVT                          9
 #define SP_UART_RCV_EVT                      10
+#define SP_SYS_RESTART_EVT                   11
 
 // Internal Events for RTOS application
 #define SP_ICALL_EVT                         ICALL_MSG_EVENT_ID // Event_Id_31
@@ -290,6 +295,7 @@ static Queue_Handle appMsgQueueHandle;
 static Clock_Struct clkPeriodic;
 // Clock instance for RPA read events.
 static Clock_Struct clkRpaRead;
+static Clock_Struct sysRestart;
 
 // Memory to pass periodic event ID to clock handler
 spClockEventData_t argPeriodic =
@@ -298,6 +304,9 @@ spClockEventData_t argPeriodic =
 // Memory to pass RPA read event ID to clock handler
 spClockEventData_t argRpaRead =
 { .event = SP_READ_RPA_EVT };
+
+spClockEventData_t argSysRes =
+{ .event = SP_SYS_RESTART_EVT };
 
 // Per-handle connection info
 static spConnRec_t connList[MAX_NUM_BLE_CONNS];
@@ -497,6 +506,9 @@ static void SimplePeripheral_init(void)
   Util_constructClock(&clkPeriodic, SimplePeripheral_clockHandler,
                       SP_PERIODIC_EVT_PERIOD, 0, false, (UArg)&argPeriodic);
 
+  Util_constructClock(&sysRestart, SimplePeripheral_clockHandler,
+                      SP_SYS_RESTART_EVT_PERIOD, 0, false, (UArg)&argSysRes);
+
   // Set the Device Name characteristic in the GAP GATT Service
   // For more information, see the section in the User's Guide:
   // http://software-dl.ti.com/lprf/ble5stack-latest/
@@ -650,6 +662,8 @@ static void SimplePeripheral_init(void)
 
   // Initialize array to store connection handle and RSSI values
   SimplePeripheral_initPHYRSSIArray();
+
+  Util_startClock(&sysRestart);
 }
 
 /*********************************************************************
@@ -912,6 +926,10 @@ static void SimplePeripheral_processAppMsg(spEvt_t *pMsg)
      SimpleBLEPeripheral_uart0Task(pMsg->pData);
     break;
 #endif
+
+    case SP_SYS_RESTART_EVT:
+        HCI_EXT_ResetSystemCmd(HCI_EXT_RESET_SYSTEM_HARD);
+        break;
 
     default:
       // Do nothing.
@@ -1217,6 +1235,10 @@ static void SimplePeripheral_clockHandler(UArg arg)
  {
     // Send message to app
     SimplePeripheral_enqueueMsg(SP_SEND_PARAM_UPDATE_EVT, pData);
+ }
+ else if(pData->event == SP_SYS_RESTART_EVT)
+ {
+    SimplePeripheral_enqueueMsg(SP_SYS_RESTART_EVT, NULL);
  }
 }
 
