@@ -78,6 +78,11 @@
 #include <board.h>
 #include <board_key.h>
 
+#ifdef IWDG_ENABLE
+#include <ti/drivers/Watchdog.h>
+#include <inc/hw_wdt.h>
+#endif
+
 #include "simple_peripheral.h"
 
 #include "snv.h"
@@ -442,6 +447,36 @@ extern void AssertHandler(uint8 assertCause, uint8 assertSubcause);
 /*********************************************************************
  * PROFILE CALLBACKS
  */
+/****************Watch Dog Functions*********************************/
+#ifdef IWDG_ENABLE
+
+//Watchdog_Params params;
+Watchdog_Handle watchdog;
+
+void wdtCallback(UArg handle)
+{
+    Watchdog_clear(watchdog);
+}
+
+void wdtInitFxn(void)
+{
+    uint32_t  reloadValue;
+
+    Watchdog_Params wp;
+
+    Watchdog_init();
+    Watchdog_Params_init(&wp);
+    wp.callbackFxn    = (Watchdog_Callback)wdtCallback;
+    wp.debugStallMode = Watchdog_DEBUG_STALL_ON;
+    wp.resetMode      = Watchdog_RESET_ON;
+
+    watchdog = Watchdog_open(CC2640R2_LAUNCHXL_WATCHDOG0, &wp);
+    reloadValue = Watchdog_convertMsToTicks(watchdog, 4000000);
+
+    if( reloadValue != 0)
+        Watchdog_setReload(watchdog, reloadValue); //  (WDT runs always at 48MHz/32)
+}
+#endif
 
 /*********************************************************************
  * @fn      simple_peripheral_spin
@@ -528,6 +563,10 @@ static void SimplePeripheral_init(void)
   adcvalue = adc_OneShot_Read();
   scanRspData[23] = adcvalue & 0xFF;
   scanRspData[24] = adcvalue >> 8;
+
+#ifdef IWDG_ENABLE
+    wdtInitFxn();
+#endif
 
 #ifndef DEMO
   if(ibeaconInf_Config.atFlag != (0xFF - 1))
