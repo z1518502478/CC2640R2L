@@ -488,6 +488,7 @@ void SimplePeripheral_createTask(void)
  */
 static void SimplePeripheral_init(void)
 {
+    uint16_t adcvalue = 0;
   // ******************************************************************
   // N0 STACK API CALLS CAN OCCUR BEFORE THIS CALL TO ICall_registerApp
   // ******************************************************************
@@ -524,6 +525,9 @@ static void SimplePeripheral_init(void)
 
   Nvram_Init();
   SimpleBLEPeripheral_BleParameterGet();
+  adcvalue = adc_OneShot_Read();
+  scanRspData[23] = adcvalue & 0xFF;
+  scanRspData[24] = adcvalue >> 8;
 
 #ifndef DEMO
   if(ibeaconInf_Config.atFlag != (0xFF - 1))
