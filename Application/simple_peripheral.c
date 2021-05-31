@@ -131,6 +131,8 @@
 // Pass parameter updates to the app for it to decide.
 #define DEFAULT_PARAM_UPDATE_REQ_DECISION     GAP_UPDATE_REQ_PASS_TO_APP
 
+#define SBP_PERIODIC_EVT_PERIOD_1s           1000
+
 // How often to perform periodic event (in ms)
 #define SP_PERIODIC_EVT_PERIOD               60000
 
@@ -2246,7 +2248,7 @@ static void SimpleBLEPeripheral_uart0Task(uint8_t *data)
 
     if( TRUE == restart )
     {
-        HCI_EXT_ResetSystemCmd(HCI_EXT_RESET_SYSTEM_HARD);
+        Util_restartClock(&sysRestart, SBP_PERIODIC_EVT_PERIOD_1s);
     }
 }
 
