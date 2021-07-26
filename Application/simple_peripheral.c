@@ -594,6 +594,8 @@ static void SimplePeripheral_init(void)
   {
     switch(ibeaconInf_Config.txInterval)
     {
+      case 21:advInt = 1600;
+          break;
       case 1: advInt = 1400;                            //875ms
           break;
       case 2: advInt = DEFAULT_ADVERTISING_INTERVAL*5;  //500ms
@@ -640,6 +642,13 @@ static void SimplePeripheral_init(void)
   }
 
   HCI_EXT_SetTxPowerCmd(txpower);
+
+  {
+    memcpy(&hw[10], &ibeaconInf_Config.hwvr[0], sizeof(uint32_t));
+    DevInfo_SetParameter(DEVINFO_HARDWARE_REV, sizeof(hw), hw);
+    ibeaconInf_Config.mDate[10] = '\0';
+    DevInfo_SetParameter(DEVINFO_MANUFACTUREDATE, 11, &ibeaconInf_Config.mDate[0]);
+  }
 
   // Initialize GATT attributes
   GGS_AddService(GATT_ALL_SERVICES);           // GAP GATT Service
