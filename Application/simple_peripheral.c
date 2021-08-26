@@ -139,6 +139,12 @@
 // How often to read current current RPA (in ms)
 #define SP_READ_RPA_EVT_PERIOD               3000
 
+//led delay 3s (in ms)
+#define SP_LED_ON_EVT_PERIOD                 3000
+
+//led delay 500ms (in ms)
+#define SP_LED_FLICKER_EVT_PERIOD            500
+
 // How often to restart system (in ms)
 #define SP_SYS_RESTART_EVT_PERIOD            1800000
 
@@ -165,6 +171,8 @@
 #define SP_CONN_EVT                          9
 #define SP_UART_RCV_EVT                      10
 #define SP_SYS_RESTART_EVT                   11
+#define SP_LED_DELAY_EVT                     12
+#define SP_LED_FLICK_EVT                     13
 
 // Internal Events for RTOS application
 #define SP_ICALL_EVT                         ICALL_MSG_EVENT_ID // Event_Id_31
@@ -286,6 +294,8 @@ uint8_t spTaskStack[SP_TASK_STACK_SIZE];
  * LOCAL VARIABLES
  */
 
+GapAdv_params_t advParamLegacy;
+
 // Entity ID globally used to check for source and/or destination of messages
 static ICall_EntityID selfEntity;
 
@@ -303,6 +313,8 @@ static Clock_Struct clkPeriodic;
 // Clock instance for RPA read events.
 static Clock_Struct clkRpaRead;
 static Clock_Struct sysRestart;
+static Clock_Struct delay3s;
+static Clock_Struct delay500ms;
 
 // Memory to pass periodic event ID to clock handler
 spClockEventData_t argPeriodic =
@@ -314,6 +326,12 @@ spClockEventData_t argRpaRead =
 
 spClockEventData_t argSysRes =
 { .event = SP_SYS_RESTART_EVT };
+
+spClockEventData_t argLedDelay =
+{ .event = SP_LED_DELAY_EVT };
+
+spClockEventData_t argLedFlick =
+{ .event = SP_LED_FLICK_EVT };
 
 // Per-handle connection info
 static spConnRec_t connList[MAX_NUM_BLE_CONNS];
@@ -366,7 +384,7 @@ static uint8_t scanRspData[] =
     0x78,0x25,      //UUID
     0x27,0x14,
     0x36,0xC5,     //major minor
-    0x81,0x01      //µÁ≥ÿµÁ¡ø
+    0x81,0x01      //ÔøΩÔøΩÿµÔøΩÔøΩÔøΩ
 };
 
 // Advertising handles
@@ -383,23 +401,25 @@ static uint8 rpa[B_ADDR_LEN] = {0};
 ibeaconinf_config_t ibeaconInf_Config;
 
 static uint8_t rxbuff[64];
+uint8_t cnt = 0;
+bool Flag = false;
+uint8_t led_state = 0;
 
 extern uint8 configLimit_Flg;
 extern uint8 writerAttr_Flg;
 
 static uint16_t gapRole_ConnectionHandle;
 
-const uint8_t D_FRT[10] ={'2','0','2','1','-','0','1','-','2','2'};                 //πÃº˛∑¢≤º»’∆⁄ ±ÿ–Î”Î…Ë±∏–≈œ¢“ª÷¬
-const uint8_t D_FR[14]={'F','M','V','E','R','S','I','O','N','_','0','0','0','1'};   //πÃº˛∞Ê±æ      ±ÿ–Î”Î…Ë±∏–≈œ¢“ª÷¬
-const uint8_t D_CKey[16]={0xDE,0x48,0x2B,0x1C,0x22,0x1C,0x6C,0x30,0x3C,0xF0,0x50,0xEB,0x00,0x20,0xB0,0xBD}; //”Î…˙≤˙»Ìº˛≈‰∫œ π”√
+const uint8_t D_FRT[10] ={'2','0','2','1','-','0','1','-','2','2'};                 //ÔøΩÃºÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩË±∏ÔøΩÔøΩœ¢“ªÔøΩÔøΩ
+const uint8_t D_FR[14]={'F','M','V','E','R','S','I','O','N','_','0','0','0','1'};   //ÔøΩÃºÔøΩÔøΩÊ±æ      ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩË±∏ÔøΩÔøΩœ¢“ªÔøΩÔøΩ
+const uint8_t D_CKey[16]={0xDE,0x48,0x2B,0x1C,0x22,0x1C,0x6C,0x30,0x3C,0xF0,0x50,0xEB,0x00,0x20,0xB0,0xBD}; //ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ πÔøΩÔøΩ
 uint8_t hw[15] ={'H','W','V','E','R','S','I','O','N','_','0','0','0','1','\0'};
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
-
+static void led_delay_500ms();
 static void SimplePeripheral_init( void );
 static void SimplePeripheral_taskFxn(UArg a0, UArg a1);
-
 static uint8_t SimplePeripheral_processStackMsg(ICall_Hdr *pMsg);
 static uint8_t SimplePeripheral_processGATTMsg(gattMsgEvent_t *pMsg);
 static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg);
@@ -416,7 +436,7 @@ static void SimplePeripheral_clockHandler(UArg arg);
 static void SimplePeripheral_processPairState(spPairStateData_t *pPairState);
 //static void SimplePeripheral_processPasscode(spPasscodeData_t *pPasscodeData);
 static status_t SimplePeripheral_enqueueMsg(uint8_t event, void *pData);
-//static void SimplePeripheral_keyChangeHandler(uint8 keys);
+static void SimplePeripheral_keyChangeHandler(uint8 keys);
 static void SimplePeripheral_handleKeys(uint8_t keys);
 static void SimplePeripheral_processCmdCompleteEvt(hciEvt_CmdComplete_t *pMsg);
 static void SimplePeripheral_initPHYRSSIArray(void);
@@ -505,7 +525,6 @@ static void simple_peripheral_spin(void)
 void SimplePeripheral_createTask(void)
 {
   Task_Params taskParams;
-
   // Configure task
   Task_Params_init(&taskParams);
   taskParams.stack = spTaskStack;
@@ -546,7 +565,18 @@ static void SimplePeripheral_init(void)
 
   Util_constructClock(&sysRestart, SimplePeripheral_clockHandler,
                       SP_SYS_RESTART_EVT_PERIOD, 0, false, (UArg)&argSysRes);
+  //ÂàùÂßãÂåñledÂÆöÊó∂Âô®
+  Util_constructClock(&delay3s, SimplePeripheral_clockHandler,
+                      SP_LED_ON_EVT_PERIOD, 0, false, (UArg)&argLedDelay);
 
+  Util_constructClock(&delay500ms, SimplePeripheral_clockHandler,
+                      SP_LED_FLICKER_EVT_PERIOD, 0, false, (UArg)&argLedFlick);
+
+  // Init key debouncer
+  Board_initKeys(SimplePeripheral_keyChangeHandler);
+
+  led_init();
+  //led_r();
   // Set the Device Name characteristic in the GAP GATT Service
   // For more information, see the section in the User's Guide:
   // http://software-dl.ti.com/lprf/ble5stack-latest/
@@ -704,9 +734,6 @@ static void SimplePeripheral_init(void)
 
   // Initialize GATT Client
   GATT_InitClient();
-
-  // Init key debouncer
-  //Board_initKeys(SimplePeripheral_keyChangeHandler);
 
   // Initialize Connection List
   SimplePeripheral_clearConnListEntry(CONNHANDLE_ALL);
@@ -985,9 +1012,21 @@ static void SimplePeripheral_processAppMsg(spEvt_t *pMsg)
         HCI_EXT_ResetSystemCmd(HCI_EXT_RESET_SYSTEM_HARD);
         break;
 
+    case SP_LED_DELAY_EVT:
+        led_close();
+        break;
+
+    case SP_LED_FLICK_EVT:
+        led_delay_500ms();
+        if (cnt < 6)
+        {
+            Util_startClock(&delay500ms);
+        }
+        break;
+
     default:
-      // Do nothing.
-      break;
+        // Do nothing.
+        break;
   }
 
   // Free message data if it exists and we are to dealloc
@@ -997,6 +1036,21 @@ static void SimplePeripheral_processAppMsg(spEvt_t *pMsg)
   }
 }
 
+
+static void led_delay_500ms()
+{
+    cnt++;
+    if (led_state == 0)
+    {
+        led_g();
+        led_state = 1;
+    }
+    else
+    {
+        led_close();
+        led_state = 0;
+    }
+}
 /*********************************************************************
  * @fn      SimplePeripheral_processGapMessage
  *
@@ -1030,7 +1084,6 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
 
         // Temporary memory for advertising parameters for set #1. These will be copied
         // by the GapAdv module
-        GapAdv_params_t advParamLegacy;
 
         advParamLegacy.eventProps = GAP_ADV_PROP_CONNECTABLE | GAP_ADV_PROP_SCANNABLE | GAP_ADV_PROP_LEGACY;
         advParamLegacy.primIntMin = advInt;
@@ -1065,7 +1118,7 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
                                      GAP_ADV_EVT_MASK_SET_TERMINATED);
 
         // Enable legacy advertising for set #1
-        status = GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX , 0);
+        //status = GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX , 0);
         SIMPLEPERIPHERAL_ASSERT(status == SUCCESS);
 
 #if defined(BLE_V42_FEATURES) && (BLE_V42_FEATURES & PRIVACY_1_2_CFG)
@@ -1294,6 +1347,14 @@ static void SimplePeripheral_clockHandler(UArg arg)
  {
     SimplePeripheral_enqueueMsg(SP_SYS_RESTART_EVT, NULL);
  }
+  else if(pData->event == SP_LED_DELAY_EVT)
+ {
+    SimplePeripheral_enqueueMsg(SP_LED_DELAY_EVT, NULL);
+ }
+   else if(pData->event == SP_LED_FLICK_EVT)
+ {
+    SimplePeripheral_enqueueMsg(SP_LED_FLICK_EVT, NULL);
+ }
 }
 
 /*********************************************************************
@@ -1305,20 +1366,20 @@ static void SimplePeripheral_clockHandler(UArg arg)
  *
  * @return  none
  */
-//static void SimplePeripheral_keyChangeHandler(uint8_t keys)
-//{
-//  uint8_t *pValue = ICall_malloc(sizeof(uint8_t));
-//
-//  if (pValue)
-//  {
-//    *pValue = keys;
-//
-//    if(SimplePeripheral_enqueueMsg(SP_KEY_CHANGE_EVT, pValue) != SUCCESS)
-//    {
-//      ICall_free(pValue);
-//    }
-//  }
-//}
+static void SimplePeripheral_keyChangeHandler(uint8_t keys)
+{
+ uint8_t *pValue = ICall_malloc(sizeof(uint8_t));
+
+ if (pValue)
+ {
+   *pValue = keys;
+
+   if(SimplePeripheral_enqueueMsg(SP_KEY_CHANGE_EVT, pValue) != SUCCESS)
+   {
+     ICall_free(pValue);
+   }
+ }
+}
 
 /*********************************************************************
  * @fn      SimplePeripheral_handleKeys
@@ -1331,21 +1392,30 @@ static void SimplePeripheral_clockHandler(UArg arg)
  */
 static void SimplePeripheral_handleKeys(uint8_t keys)
 {
-  if (keys & KEY_LEFT)
-  {
-    // Check if the key is still pressed. Workaround for possible bouncing.
-    if (PIN_getInputValue(Board_PIN_BUTTON0) == 0)
+
+    if (keys & KEY_UP)
     {
+        if (!Flag)
+        {
+            Util_startClock(&delay500ms);
+            GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+
+            Flag = true;
+        }
+        else
+        {
+            
+            led_r();
+            Util_startClock(&delay3s);
+            GapAdv_disable(advHandleLegacy);
+
+            Flag = false;
+        }
     }
-  }
-  else if (keys & KEY_RIGHT)
-  {
-    // Check if the key is still pressed. Workaround for possible bouncing.
-    if (PIN_getInputValue(Board_PIN_BUTTON1) == 0)
-    {
-    }
-  }
+    cnt = 0;
 }
+
+
 
 /*********************************************************************
  * @fn      SimplePeripheral_doSetConnPhy
@@ -2209,7 +2279,7 @@ static void SimpleBLEPeripheral_uart0Task(uint8_t *data)
             //mdate
             memcpy(&ibeaconInf_Config.mDate[0], &datebuf[25], 10);
 
-            /***** ”√”⁄Õ®π˝…˙≤˙»Ìº˛ ***********/
+            /***** ÔøΩÔøΩÔøΩÔøΩÕ®ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ ***********/
             memcpy(date, &datebuf[25], sizeof(date));
             memcpy(mac, &datebuf[41], sizeof(mac));
             memset(datebuf, 0, sizeof(datebuf));
