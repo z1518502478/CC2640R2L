@@ -402,7 +402,7 @@ ibeaconinf_config_t ibeaconInf_Config;
 
 static uint8_t rxbuff[64];
 uint8_t cnt = 0;
-bool Flag = false;
+uint8_t Flag;
 uint8_t led_state = 0;
 
 extern uint8 configLimit_Flg;
@@ -576,7 +576,6 @@ static void SimplePeripheral_init(void)
   Board_initKeys(SimplePeripheral_keyChangeHandler);
 
   led_init();
-  //led_r();
   // Set the Device Name characteristic in the GAP GATT Service
   // For more information, see the section in the User's Guide:
   // http://software-dl.ti.com/lprf/ble5stack-latest/
@@ -837,8 +836,8 @@ static uint8_t SimplePeripheral_processStackMsg(ICall_Hdr *pMsg)
   switch (pMsg->event)
   {
     case GAP_MSG_EVENT:
-      SimplePeripheral_processGapMessage((gapEventHdr_t*) pMsg);
-      break;
+        SimplePeripheral_processGapMessage((gapEventHdr_t *)pMsg);
+        break;
 
     case GATT_MSG_EVENT:
       // Process GATT message
@@ -1060,12 +1059,12 @@ static void led_delay_500ms()
  */
 static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
 {
-  switch(pMsg->opcode)
-  {
+    uint8_t buf_t[5];
+    switch (pMsg->opcode)
+    {
     case GAP_DEVICE_INIT_DONE_EVENT:
     {
       bStatus_t status = FAILURE;
-
       gapDeviceInitDoneEvent_t *pPkt = (gapDeviceInitDoneEvent_t *)pMsg;
 
       if(pPkt->hdr.status == SUCCESS)
@@ -1118,7 +1117,12 @@ static void SimplePeripheral_processGapMessage(gapEventHdr_t *pMsg)
                                      GAP_ADV_EVT_MASK_SET_TERMINATED);
 
         // Enable legacy advertising for set #1
-        //status = GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX , 0);
+        Ble_ReadNv_Inf(BLE_NVID_CUST_LED, buf_t);
+        memcpy((void *)&Flag, &buf_t[4], 1);
+        if (Flag == 1)
+        {
+            status = GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+        }
         SIMPLEPERIPHERAL_ASSERT(status == SUCCESS);
 
 #if defined(BLE_V42_FEATURES) && (BLE_V42_FEATURES & PRIVACY_1_2_CFG)
@@ -1387,31 +1391,29 @@ static void SimplePeripheral_keyChangeHandler(uint8_t keys)
  * @brief   Handles all key events for this device.
  *
  * @param   keys - bit field for key events. Valid entries:
- *                 KEY_LEFT
- *                 KEY_RIGHT
+ * 
  */
 static void SimplePeripheral_handleKeys(uint8_t keys)
 {
-
     if (keys & KEY_UP)
     {
-        if (!Flag)
+        if (Flag != 1)
         {
             Util_startClock(&delay500ms);
             GapAdv_enable(advHandleLegacy, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
 
-            Flag = true;
+            Flag = 1;
         }
         else
-        {
-            
+        {            
             led_r();
             Util_startClock(&delay3s);
             GapAdv_disable(advHandleLegacy);
 
-            Flag = false;
+            Flag = 0;
         }
     }
+    Ble_WriteNv_Inf(BLE_NVID_CUST_LED, &Flag);
     cnt = 0;
 }
 

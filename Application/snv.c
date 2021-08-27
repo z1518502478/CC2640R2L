@@ -13,6 +13,7 @@ static const block_info_t fb[] =
 {
     /* block ID (must < 0xf)    size */
 	{BLE_NVID_DEVINF_START,       44},
+    {BLE_NVID_CUST_LED,            5},
 };
 
 #define FB_SIZE         (sizeof(fb)/sizeof(block_info_t))
@@ -122,13 +123,13 @@ int Ble_ReadNv_Inf(uint8_t nvid, uint8_t *readbuf)
 	}
 	
 	if(i == FB_SIZE)
-		len = 47;  
-	
-	status = osal_snv_read(nvid, len, (void *)readbuf);	
-	if(status != SUCCESS)
-		return -1;
+		len = 47;
 
-	return 0;
+    status = osal_snv_read(nvid, len, (void *)readbuf);
+    if (status != SUCCESS)
+        return -1;
+
+    return 0;
 }
 
 int Ble_WriteNv_Inf(uint8_t nvid, uint8_t *writebuf)

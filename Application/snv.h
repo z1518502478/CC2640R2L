@@ -10,6 +10,7 @@
 /* Customer NV Items - Range 0x80 - 0x8F - This must match the number of Bonding entries */
 #define BLE_NVID_CUST_START 0x80 //!< Start of the Customer's NV IDs
 #define BLE_NVID_CUST_END   0x8F //!< End of the Customer's NV IDs
+#define BLE_NVID_CUST_LED   0x8A
 
 #define BLE_NVID_DEVINF_START 	BLE_NVID_CUST_START 
 
